@@ -84,6 +84,35 @@ def recent_transactions():
     return json.loads(json_util.dumps(recent_transactions))
 
 
+### Raouf
+def display_users_by_tier(users, tier):
+    try:
+        # Filtrer les utilisateurs en fonction du niveau de compte spécifié
+        filtered_users = [user for user in users if has_tier(user, tier)]
+
+        # Afficher les utilisateurs filtrés
+        print(f"Utilisateurs avec le niveau de compte '{tier}':")
+        for user in filtered_users:
+            user['_id'] = str(user['_id'])
+        return filtered_users
+    except Exception as excep:
+        print("Erreur lors de l'affichage des utilisateurs par niveau de compte", excep)
+
+def has_tier(user, target_tier):
+    # Vérifier si l'utilisateur a un compte avec le niveau spécifié
+     return any(
+        detail.get('tier') == target_tier
+        for detail in user.get('tier_and_details', {}).values()
+    ) 
+
+
+class UsersByTierView(APIView):
+    def get(self, request, tier):
+        users_data = get_customer_data()
+        filtered_users = display_users_by_tier(users_data, tier)
+        return JsonResponse(filtered_users, safe=False)
+# raouf
+
 def top_products():
     collection = db['transactions']
 
