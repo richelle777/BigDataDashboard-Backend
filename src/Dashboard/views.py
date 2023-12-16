@@ -1,5 +1,8 @@
 # api/views.py
+from sqlite3 import Date
+from datetime import datetime
 from bson import json_util
+from django.core.cache import cache
 import json
 from django.http import JsonResponse
 from pymongo import MongoClient
@@ -15,6 +18,25 @@ try:
     db = client['sample_analytics']  # Nom de la base de données
 except Exception as e:
     print("error during connection to database", e)
+
+
+# Fonction de regroupement par code postal
+def group_customers_by_postal_code():
+    try:
+        collection = db['customers']
+        customers = list(collection.find())
+        grouped_customers = {}
+
+        for customer in customers:
+            postal_code_prefix = customer['address'][-5:-5]   # Utilisez les deux premiers chiffres du code postal
+            if postal_code_prefix not in grouped_customers:
+                grouped_customers[postal_code_prefix] = []
+            grouped_customers[postal_code_prefix].append(customer)
+
+        return json.loads(json_util.dumps(grouped_customers))
+    except Exception as excep:
+        print("error during get customer informations", excep)
+    grouped_customers = {}
 
 
 def get_customer_data():
@@ -42,10 +64,10 @@ def get_account_data():
 def get_transaction_data():
     try:
         collection = db['transactions']
-        transactions = list(collection.find())
-        for transaction in transactions:
-            transaction['_id'] = str(transaction['_id'])
-        return transactions
+        transactions = list(collection.aggregate([
+            {"$unwind": "$transactions"}]))
+
+        return json.loads(json_util.dumps(transactions))
     except Exception as excep:
         print("error during get transaction informations", excep)
 
@@ -70,7 +92,7 @@ def total_Avg_transactions():
         average_amount_list = list(average_amount_cursor)
         average_amount = average_amount_list[0]['average_amount'] if average_amount_list else None
 
-        return {"total_amount": total_amount, "average_amount": average_amount}
+        return {"total_amount": total_amount, "average_amount": round(average_amount, 2)}
     except Exception as excep:
         print("error during get transaction avg informations", excep)
 
@@ -79,9 +101,25 @@ def recent_transactions():
     collection = db['transactions']
 
     # Récupération des dernières transactions
-    recent_transactions = collection.find().sort([('$natural', -1)]).limit(5)
+    # recent_transactions = collection.transactions.find().sort([('$natural', -1)]).limit(5)
 
-    return json.loads(json_util.dumps(recent_transactions))
+    # Utilisation de l'agrégation pour déplier le tableau 'transactions' et trier par date
+    pipeline = [
+        {
+            '$unwind': '$transactions'
+        },
+        {
+            '$sort': {'transactions.date': -1}
+        },
+        {
+            '$limit': 10
+        }
+    ]
+
+    # Exécutez la requête d'agrégation
+    result = list(collection.aggregate(pipeline))
+
+    return json.loads(json_util.dumps(result))
 
 
 def top_products():
@@ -96,6 +134,147 @@ def top_products():
     ])
 
     return json.loads(json_util.dumps(top_products))
+
+
+def accounts_by_tier():
+    collection = db['customers']
+
+    pipeline = [
+        {
+            "$project": {
+                "tier_and_details_array": {"$objectToArray": "$tier_and_details"}
+            }
+        },
+        {
+            "$unwind": "$tier_and_details_array"
+        },
+        {
+            "$group": {
+                "_id": "$tier_and_details_array.v.tier",
+                "count": {"$sum": 1}
+            }
+        }
+    ]
+
+    result = collection.aggregate(pipeline)
+
+    return json.loads(json_util.dumps(result))
+
+
+# (buy, sell)
+def code_by_transaction():
+    collection = db['transactions']
+
+    pipeline = [
+        {"$unwind": "$transactions"},
+        {"$group": {"_id": "$transactions.transaction_code", "total": {"$sum": 1}}},
+    ]
+
+    result = collection.aggregate(pipeline)
+
+    return json.loads(json_util.dumps(result))
+
+
+def customers_by_age():
+    collection = db['customers']
+    result = collection.aggregate(
+        [{"$project": {"age": {"$floor": {"$divide": [{"$subtract": [datetime.now(), "$birthdate"]}, 31536000000]}}}},
+         {
+             "$group": {"_id": {"$switch": {
+                 "branches": [{"case": {"$and": [{"$lt": ["$age", 21]}]}, "then": "<21"},
+                              {"case": {"$and": [{"$gte": ["$age", 21]}, {"$lt": ["$age", 31]}]}, "then": "21-30"},
+                              {"case": {"$and": [{"$gte": ["$age", 31]}, {"$lt": ["$age", 46]}]}, "then": "32-45"},
+                              {"case": {"$and": [{"$gte": ["$age", 46]}, {"$lt": ["$age", 71]}]}, "then": "46-70"},
+                              {"case": {"$and": [{"$gte": ["$age", 71]}, {"$lt": ["$age", 100]}]}, "then": "71-99"}
+                              ],
+                 "default": "Unknown"}},
+                 "count": {"$sum": 1}
+             }
+         }
+         ])
+    # result = collection.aggregate([
+    #     {
+    #         "$project": {
+    #             "age": {
+    #                 "$floor": {
+    #                     "$divide": [
+    #                         {"$subtract": [datetime.now(), "$birthdate"]},
+    #                         31536000000
+    #                     ]
+    #                 }
+    #             }
+    #         }
+    #     },
+    #     {
+    #         "$facet": {
+    #             "ageGroups": [
+    #                 {
+    #                     "$bucket": {
+    #                         "groupBy": "$age",
+    #                         "boundaries": [20,30,40,50,60,70,80,90, 100],
+    #                         "default": "Unknown",
+    #                         "output": {
+    #                             "count": {"$sum": 1}
+    #                         }
+    #                     }
+    #                 }
+    #             ]
+    #         }
+    #     },
+    #     {
+    #         "$unwind": "$ageGroups"
+    #     },
+    #     {
+    #         "$replaceRoot": {"newRoot": "$ageGroups"}
+    #     }
+    # ])
+
+    # result = collection.aggregate([
+    #     {
+    #         "$project": {
+    #             "age": {
+    #                 "$floor": {
+    #                     "$divide": [
+    #                         {"$subtract": [datetime.now(), "$birthdate"]},
+    #                         31536000000
+    #                     ]
+    #                 }
+    #             }
+    #         }
+    #     }
+    # ])
+    #
+    # # Convertir le résultat en une liste Python
+    # ages_list = [doc["age"] for doc in result]
+    #
+    # # Afficher la liste des âges
+    # print(ages_list)
+
+    return json.loads(json_util.dumps(result))
+
+
+class GroupCustomersByCodeView(APIView):
+    def get(self, request):
+        result = group_customers_by_postal_code()
+        return JsonResponse(result, safe=False)
+
+class CodeByTransactionView(APIView):
+    def get(self, request):
+        result = code_by_transaction()
+        return JsonResponse(result, safe=False)
+
+
+class NbCustomersByAgeView(APIView):
+    def get(self, request):
+        result = customers_by_age()
+        return JsonResponse(result, safe=False)
+
+
+class NbAccountsByTierView(APIView):
+    def get(self, request):
+        result = accounts_by_tier()
+        return JsonResponse(result, safe=False)
+
 
 class CustomersListView(APIView):
     def get(self, request):
@@ -121,15 +300,31 @@ class TotalTransactionsView(APIView):
         return JsonResponse(len(transactions), safe=False)
 
 
+class AllTotalView(APIView):
+    def get(self, request):
+        transactions = get_transaction_data()
+        accounts = get_account_data()
+        customers = get_customer_data()
+        amount_transactions = total_Avg_transactions()
+
+        return JsonResponse(
+            {'total-customer': len(customers), 'total-transaction': len(transactions), 'total-account': len(accounts),
+             'total-amount-transaction': amount_transactions['total_amount'],
+             'average-amount-transaction': amount_transactions['average_amount']},
+            safe=False)
+
+
 class TotalAvgTransactionsView(APIView):
     def get(self, request):
         transactions = total_Avg_transactions()
         return JsonResponse(transactions, safe=False)
 
+
 class RecentTransactionsView(APIView):
     def get(self, request):
         transactions = recent_transactions()
         return JsonResponse(transactions, safe=False)
+
 
 class TopProductsView(APIView):
     def get(self, request):
