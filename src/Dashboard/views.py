@@ -372,6 +372,80 @@ def transactions_by_period_and_code(startdate, enddate):
     print(result)
     return result
 
+# Affichage du nombre de comptes par produits
+def nb_account_by_product():
+    collection = db['accounts']
+    pipeline = [
+        {"$unwind": "$products"},
+        {"$group": {"_id": "$products", "total": {"$sum": 1}}},
+    ]
+
+    result = collection.aggregate(pipeline)
+
+    return json.loads(json_util.dumps(result))
+
+def red_account_orange_account():
+    # Récupérer la date actuelle
+    current_date = datetime.utcnow()
+    collection = db['transactions']
+
+    # Définir une limite pour ce qui est considéré comme "très proche"
+    threshold = 0.9  # Vous pouvez ajuster ce seuil selon vos besoins
+
+    # Requête pour récupérer les comptes au rouge et au orange
+    query = [
+        {"$unwind": "$transactions"},
+        {"$match": {"transactions.total": {"$type": "string"}}},  # Filtre pour exclure les valeurs non convertibles
+        {"$addFields": {
+            "total_amount": {"$toDouble": "$transactions.total"}
+        }},
+        {
+            "$lookup": {
+                "from": "accounts",  # Remplacez par le nom de votre collection d'accounts
+                "localField": "account_id",
+                "foreignField": "account_id",
+                "as": "account"
+            }
+        },
+        {
+            "$unwind": "$account"
+        },
+        {
+            "$project": {
+                "account_id": 1,
+                "limit": "$account.limit",
+                "total_amount": 1
+            }
+        },
+        {
+            "$match": {
+                "$expr": {
+                    "$gte": ["$total_amount", "$limit"]
+                }
+            }
+        }
+    ]
+
+    accounts_status = list(collection.aggregate(query))
+
+    # Filtrer les comptes très proches de la limite
+    for account in accounts_status:
+        if "limit" in account and account["total_amount"] >= account["limit"] * threshold:
+            account["status"] = "Orange"
+        else:
+            account["status"] = "Rouge"
+
+    return accounts_status
+
+
+class RedAccountOrangeAccountView(APIView):
+    def get(self, request):
+        result = red_account_orange_account()
+        return JsonResponse(result, safe=False)
+class NbAccountByProductView(APIView):
+    def get(self, request):
+        result = nb_account_by_product()
+        return JsonResponse(result, safe=False)
 
 class TransactionsByPeriodAndCodeView(APIView):
     def get(self, request, startdate, enddate):

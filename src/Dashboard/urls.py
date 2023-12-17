@@ -2,8 +2,8 @@
 from django.urls import path
 from .views import CustomersListView, TotalCustomersView, TotalAccountsView, TotalTransactionsView, \
     TotalAvgTransactionsView, RecentTransactionsView, TopProductsView, AllTotalView, NbAccountsByTierView, \
-    NbCustomersByAgeView, CodeByTransactionView, GroupCustomersByCodeView, UsersByTierView,  BestBadAccountsView, TransactionsByPeriodAndCodeView
-
+    NbCustomersByAgeView, CodeByTransactionView, GroupCustomersByCodeView, UsersByTierView, BestBadAccountsView, \
+    TransactionsByPeriodAndCodeView, NbAccountByProductView, RedAccountOrangeAccountView
 
 urlpatterns = [
     path('customers/', CustomersListView.as_view(), name='customers-list'),
@@ -25,5 +25,9 @@ urlpatterns = [
     # comptes avec les transactions les plus elevees
     path('best_bad_accounts/', BestBadAccountsView.as_view(), name='transactions-total'),
     #Affichage des transactions par periode et par code (sell or buy)
-    path('transaction_by_code_period/<str:startdate>/<str:enddate>/', TransactionsByPeriodAndCodeView.as_view(), name='transactions-total')
+    path('transaction_by_code_period/<str:startdate>/<str:enddate>/', TransactionsByPeriodAndCodeView.as_view(), name='transactions-total'),
+    #Affichage du nombre de comptes par produits
+    path('nb_account_by_product/', NbAccountByProductView.as_view(), name='transactions-total'),
+    # Affichage des clients au rouge , orange
+    path('red_orange_account/', RedAccountOrangeAccountView.as_view(), name='transactions-total')
 ]
