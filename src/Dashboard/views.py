@@ -8,7 +8,7 @@ from django.http import JsonResponse
 from pymongo import MongoClient
 from rest_framework.views import APIView
 from rest_framework.response import Response
-
+from operator import itemgetter
 from . import settings
 from .models import Customers
 from .serializers import CustomerSerializer
@@ -28,7 +28,7 @@ def group_customers_by_postal_code():
         grouped_customers = {}
 
         for customer in customers:
-            postal_code_prefix = customer['address'][-5:-5]   # Utilisez les deux premiers chiffres du code postal
+            postal_code_prefix = customer['address'][-5:-5]  # Utilisez les deux premiers chiffres du code postal
             if postal_code_prefix not in grouped_customers:
                 grouped_customers[postal_code_prefix] = []
             grouped_customers[postal_code_prefix].append(customer)
@@ -79,15 +79,30 @@ def total_Avg_transactions():
         # Calcul du montant total
         total_amount_cursor = collection.aggregate([
             {"$unwind": "$transactions"},
-            {"$group": {"_id": None, "total_amount": {"$sum": "$transactions.amount"}}}
+            {"$match": {"transactions.total": {"$type": "string"}}},  # Filtre pour exclure les valeurs non convertibles
+            {"$addFields": {
+                "total_amount": {"$toDouble": "$transactions.total"}
+            }},
+            {"$group": {
+                "_id": None,
+                "total_amount": {"$sum": "$total_amount"}
+            }}
         ])
         total_amount_list = list(total_amount_cursor)
+
         total_amount = total_amount_list[0]['total_amount'] if total_amount_list else 0
 
         # Calcul du montant moyen
         average_amount_cursor = collection.aggregate([
             {"$unwind": "$transactions"},
-            {"$group": {"_id": None, "average_amount": {"$avg": "$transactions.amount"}}}
+            {"$match": {"transactions.total": {"$type": "string"}}},  # Filtre pour exclure les valeurs non convertibles
+            {"$addFields": {
+                "total_amount": {"$toDouble": "$transactions.total"}
+            }},
+            {"$group": {
+                "_id": None,
+                "average_amount": {"$avg": "$total_amount"}
+            }}
         ])
         average_amount_list = list(average_amount_cursor)
         average_amount = average_amount_list[0]['average_amount'] if average_amount_list else None
@@ -136,25 +151,21 @@ def display_users_by_tier(users, tier):
     except Exception as excep:
         print("Erreur lors de l'affichage des utilisateurs par niveau de compte", excep)
 
+
 def has_tier(user, target_tier):
     # Vérifier si l'utilisateur a un compte avec le niveau spécifié
-     return any(
+    return any(
         detail.get('tier') == target_tier
         for detail in user.get('tier_and_details', {}).values()
-    ) 
+    )
 
 
-class UsersByTierView(APIView):
-    def get(self, request, tier):
-        users_data = get_customer_data()
-        filtered_users = display_users_by_tier(users_data, tier)
-        return JsonResponse(filtered_users, safe=False)
 # raouf
 
 def top_products():
     collection = db['transactions']
 
-    # Calcul du top 5 des produits les plus achetés
+    # Calcul du top 5 des plateformes de paiement les plus utilisees
     top_products = collection.aggregate([
         {"$unwind": "$transactions"},
         {"$group": {"_id": "$transactions.symbol", "total": {"$sum": 1}}},
@@ -204,6 +215,38 @@ def code_by_transaction():
     return json.loads(json_util.dumps(result))
 
 
+def best_bad_accounts():
+    collection = db['transactions']
+
+    # Récupération des données avec conversion de total_amount en nombre
+    all_accounts = db.transactions.aggregate([
+        {"$unwind": "$transactions"},
+        {"$match": {"transactions.total": {"$type": "string"}}},  # Filtre pour exclure les valeurs non convertibles
+        {"$addFields": {
+            "total_amount": {"$toDouble": "$transactions.total"}
+        }},
+        {"$group": {
+            "_id": "$account_id",
+            "total_amount": {"$sum": "$total_amount"}
+        }},
+        {"$sort": {"total_amount": -1}}
+    ])
+
+    # Convertir le curseur en une liste de dictionnaires
+    all_accounts_list = list(all_accounts)
+
+    # Récupération des 10 comptes avec le montant total le plus élevé
+    top_accounts = sorted(all_accounts_list, key=lambda x: x['total_amount'], reverse=True)[:10]
+
+    # Récupération des 10 comptes avec le montant total le plus bas
+    bottom_accounts = sorted(all_accounts_list, key=lambda x: x['total_amount'])[:10]
+
+    print(top_accounts)
+    print(bottom_accounts)
+
+    return {"top_accounts": top_accounts, "bottom_accounts": bottom_accounts}
+
+
 def customers_by_age():
     collection = db['customers']
     result = collection.aggregate(
@@ -212,7 +255,7 @@ def customers_by_age():
              "$group": {"_id": {"$switch": {
                  "branches": [{"case": {"$and": [{"$lt": ["$age", 21]}]}, "then": "<21"},
                               {"case": {"$and": [{"$gte": ["$age", 21]}, {"$lt": ["$age", 31]}]}, "then": "21-30"},
-                              {"case": {"$and": [{"$gte": ["$age", 31]}, {"$lt": ["$age", 46]}]}, "then": "32-45"},
+                              {"case": {"$and": [{"$gte": ["$age", 31]}, {"$lt": ["$age", 46]}]}, "then": "31-45"},
                               {"case": {"$and": [{"$gte": ["$age", 46]}, {"$lt": ["$age", 71]}]}, "then": "46-70"},
                               {"case": {"$and": [{"$gte": ["$age", 71]}, {"$lt": ["$age", 100]}]}, "then": "71-99"}
                               ],
@@ -282,10 +325,65 @@ def customers_by_age():
     return json.loads(json_util.dumps(result))
 
 
+# Affichage des transactions par periode et par code (sell or buy)
+def transactions_by_period_and_code(startdate, enddate):
+    collection = db['transactions']
+    # Convertissez les chaînes de date en objets datetime
+    start_date = datetime.strptime(startdate, '%Y-%m-%d')
+    end_date = datetime.strptime(enddate, '%Y-%m-%d')
+
+    # Convertissez les dates en format compatible avec la base de données
+    start_date_db = datetime.combine(start_date, datetime.min.time())
+    end_date_db = datetime.combine(end_date, datetime.max.time())
+
+    print(start_date_db)
+    print(end_date_db)
+
+    # Requête MongoDB
+    pipeline = [
+        {
+            '$unwind': '$transactions'
+        },
+        {
+            '$match': {
+                'transactions.date': {'$gte': start_date_db, '$lte': end_date_db}
+            }
+        },
+        {
+            "$addFields": {
+                "month": {
+                    "$month": "$transactions.date"
+                },
+                "total_amount": {"$toDouble": "$transactions.total"}
+            }
+        },
+        {
+            '$group': {
+                '_id': {
+                    'transaction_code': '$transactions.transaction_code',
+                    'month': '$month'
+                },
+                'total_amount': {'$sum': '$total_amount'}
+            }
+        }
+    ]
+
+    result = list(collection.aggregate(pipeline))
+    print(result)
+    return result
+
+
+class TransactionsByPeriodAndCodeView(APIView):
+    def get(self, request, startdate, enddate):
+        result = transactions_by_period_and_code(startdate, enddate)
+        return JsonResponse(result, safe=False)
+
+
 class GroupCustomersByCodeView(APIView):
     def get(self, request):
         result = group_customers_by_postal_code()
         return JsonResponse(result, safe=False)
+
 
 class CodeByTransactionView(APIView):
     def get(self, request):
@@ -359,3 +457,16 @@ class TopProductsView(APIView):
     def get(self, request):
         transactions = top_products()
         return JsonResponse(transactions, safe=False)
+
+
+class UsersByTierView(APIView):
+    def get(self, request, tier):
+        users_data = get_customer_data()
+        filtered_users = display_users_by_tier(users_data, tier)
+        return JsonResponse(filtered_users, safe=False)
+
+
+class BestBadAccountsView(APIView):
+    def get(self, request):
+        accounts = best_bad_accounts()
+        return JsonResponse(accounts, safe=False)
